@@ -1,286 +1,130 @@
 #include <iostream>
+#include <vector>
 #include <string>
 #include <stdexcept>
-#include <sstream>
+#include <limits>
+#include <ios>
+#include <chrono>
+#include <algorithm>
 #include <vector>
-#include <sqlite3.h>
+#include <regex>
+#include <iomanip>
+
+#include "time.h"
+#include "workstation.h"
+#include "booking.h"
+#include "booking_manager.h"
+
+#define NOMINMAX
+#include <windows.h>
 
 using namespace std;
 
-#ifdef _WIN32
-#define WIN32_LEAN_AND_MEAN
-#include <windows.h>
-#undef byte // Убираем неоднозначность с std::byte
-#endif
-
-// Структура для представления времени бронирования
-struct Time {
-    int hour;
-    int minute;
-};
-
-// Класс для представления рабочей станции
-class Workstation {
-protected:
-    int id;
-    string name;
-    string status; // "available" или "booked"
-public:
-    Workstation(int _id, const string& _name, const string& _status = "available")
-        : id(_id), name(_name), status(_status) {}
-
-    virtual void display() const {
-        cout << "ID: " << id << ", Название: " << name << ", Статус: " << status << endl;
-    }
-
-    virtual void updateStatus(const string& newStatus) {
-        status = newStatus;
-    }
-
-    int getId() const { return id; }
-    string getName() const { return name; }
-    string getStatus() const { return status; }
-
-    // Перегрузка оператора вывода
-    friend ostream& operator<<(ostream& os, const Workstation& ws) {
-        os << "Рабочая станция [ID: " << ws.id << ", Название: " << ws.name << ", Статус: " << ws.status << "]";
-        return os;
-    }
-};
-
-// Производный класс с дополнительным полем (пример наследования)
-class SpecialWorkstation : public Workstation {
-private:
-    int performanceRating;
-public:
-    SpecialWorkstation(int _id, const string& _name, const string& _status, int _rating)
-        : Workstation(_id, _name, _status), performanceRating(_rating) {}
-
-    void display() const override {
-        Workstation::display();
-        cout << "Рейтинг производительности: " << performanceRating << endl;
-    }
-};
-
-// Класс для представления бронирования (дата – в формате "YYYY-MM-DD")
-class Booking {
-private:
-    int bookingId;
-    int workstationId;
-    string clientName;
-    string bookingDate; // дата бронирования
-    Time startTime;
-    Time endTime;
-public:
-    Booking(int _bookingId, int _workstationId, const string& _clientName, const string& _bookingDate, Time _start, Time _end)
-        : bookingId(_bookingId), workstationId(_workstationId), clientName(_clientName), bookingDate(_bookingDate), startTime(_start), endTime(_end) {}
-
-    void display() const {
-        cout << "ID бронирования: " << bookingId
-             << ", ID рабочей станции: " << workstationId
-             << ", Клиент: " << clientName
-             << ", Дата: " << bookingDate
-             << ", Время: " << startTime.hour << ":" << (startTime.minute < 10 ? "0" : "") << startTime.minute
-             << " - " << endTime.hour << ":" << (endTime.minute < 10 ? "0" : "") << endTime.minute
-             << endl;
-    }
-
-    // Перегрузка методов для обновления времени бронирования (дата не меняется)
-    void updateTime(Time newStart, Time newEnd) {
-        startTime = newStart;
-        endTime = newEnd;
-    }
-
-    void updateTime(int startHour, int startMinute, int endHour, int endMinute) {
-        startTime.hour = startHour;
-        startTime.minute = startMinute;
-        endTime.hour = endHour;
-        endTime.minute = endMinute;
-    }
-
-    int getBookingId() const { return bookingId; }
-    int getWorkstationId() const { return workstationId; }
-    string getClientName() const { return clientName; }
-    string getBookingDate() const { return bookingDate; }
-    Time getStartTime() const { return startTime; }
-    Time getEndTime() const { return endTime; }
-
-    bool operator==(const Booking& other) const {
-        return bookingId == other.bookingId;
-    }
-};
-
-// Класс для управления данными в базе данных SQLite
-class BookingManager {
-private:
-    sqlite3* db;
-public:
-    BookingManager() : db(nullptr) {
-        int rc = sqlite3_open("booking.db", &db);
-        if (rc) {
-            throw runtime_error("Не удалось открыть базу данных");
+bool parseTimeHHMM(const string& timeStr, Time& resultTime) {
+    regex time_regex("^([01]?[0-9]|2[0-3]):([0-5][0-9])$");
+    smatch match;
+    if (regex_match(timeStr, match, time_regex) && match.size() == 3) {
+        try {
+            resultTime.hour = stoi(match[1].str());
+            resultTime.minute = stoi(match[2].str());
+            return true;
+        } catch (const std::exception& e) {
+            cerr << "Ошибка преобразования времени: " << e.what() << endl;
+            return false;
         }
-        // Создание таблицы рабочих станций, если её ещё нет
-        const char* sql1 = "CREATE TABLE IF NOT EXISTS Workstations (id INTEGER PRIMARY KEY, name TEXT, status TEXT);";
-        // Создание таблицы бронирований с полем bookingDate, если её ещё нет
-        const char* sql2 = "CREATE TABLE IF NOT EXISTS Bookings (bookingId INTEGER PRIMARY KEY, workstationId INTEGER, clientName TEXT, bookingDate TEXT, startHour INTEGER, startMinute INTEGER, endHour INTEGER, endMinute INTEGER);";
-        char* errMsg = nullptr;
-        rc = sqlite3_exec(db, sql1, 0, 0, &errMsg);
-        if (rc != SQLITE_OK) {
-            string err = errMsg;
-            sqlite3_free(errMsg);
-            throw runtime_error("Ошибка SQL: " + err);
-        }
-        rc = sqlite3_exec(db, sql2, 0, 0, &errMsg);
-        if (rc != SQLITE_OK) {
-            string err = errMsg;
-            sqlite3_free(errMsg);
-            throw runtime_error("Ошибка SQL: " + err);
+    }
+    return false;
+}
+
+bool isValidDateFormat(const string& dateStr) {
+    regex date_regex("^([0-2][0-9]|3[01])-(0[1-9]|1[0-2])-([0-9]{4})$");
+    return regex_match(dateStr, date_regex);
+}
+
+void checkAndRemoveExpiredBookings(BookingManager& manager, vector<Booking>& bookingArray, vector<Workstation>& wsArray) {
+    auto now = chrono::system_clock::now();
+    vector<int> expiredBookingIds;
+    vector<int> affectedWorkstationIds;
+    bool expiredFound = false;
+
+    cout << "\nПроверка просроченных бронирований..." << endl;
+
+    for (const auto& booking : bookingArray) {
+        auto endTimePoint = booking.getEndDateTime();
+        if (endTimePoint != chrono::system_clock::time_point::min() && endTimePoint < now) {
+            expiredBookingIds.push_back(booking.getBookingId());
+            affectedWorkstationIds.push_back(booking.getWorkstationId());
+            cout << "Обнаружено просроченное бронирование ID: " << booking.getBookingId() << " для станции " << booking.getWorkstationId() << endl;
+            expiredFound = true;
         }
     }
 
-    ~BookingManager() {
-        if (db) sqlite3_close(db);
+    if (!expiredFound) {
+        cout << "Просроченных бронирований не найдено." << endl;
+        return;
     }
 
-    // Загрузка рабочих станций из БД в вектор
-    vector<Workstation> loadWorkstations() {
-        vector<Workstation> result;
-        const char* sql = "SELECT id, name, status FROM Workstations;";
-        sqlite3_stmt* stmt;
-        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            throw runtime_error("Ошибка подготовки запроса для загрузки рабочих станций");
-        }
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            int id = sqlite3_column_int(stmt, 0);
-            const unsigned char* nameText = sqlite3_column_text(stmt, 1);
-            const unsigned char* statusText = sqlite3_column_text(stmt, 2);
-            string name = nameText ? reinterpret_cast<const char*>(nameText) : "";
-            string status = statusText ? reinterpret_cast<const char*>(statusText) : "";
-            result.push_back(Workstation(id, name, status));
-        }
-        sqlite3_finalize(stmt);
-        return result;
-    }
-
-    // Загрузка бронирований из БД в вектор
-    vector<Booking> loadBookings() {
-        vector<Booking> result;
-        const char* sql = "SELECT bookingId, workstationId, clientName, bookingDate, startHour, startMinute, endHour, endMinute FROM Bookings;";
-        sqlite3_stmt* stmt;
-        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
-            throw runtime_error("Ошибка подготовки запроса для загрузки бронирований");
-        }
-        while (sqlite3_step(stmt) == SQLITE_ROW) {
-            int bookingId = sqlite3_column_int(stmt, 0);
-            int workstationId = sqlite3_column_int(stmt, 1);
-            const unsigned char* clientText = sqlite3_column_text(stmt, 2);
-            const unsigned char* dateText = sqlite3_column_text(stmt, 3);
-            int startHour = sqlite3_column_int(stmt, 4);
-            int startMinute = sqlite3_column_int(stmt, 5);
-            int endHour = sqlite3_column_int(stmt, 6);
-            int endMinute = sqlite3_column_int(stmt, 7);
-            string clientName = clientText ? reinterpret_cast<const char*>(clientText) : "";
-            string bookingDate = dateText ? reinterpret_cast<const char*>(dateText) : "";
-            Time start = { startHour, startMinute };
-            Time end = { endHour, endMinute };
-            result.push_back(Booking(bookingId, workstationId, clientName, bookingDate, start, end));
-        }
-        sqlite3_finalize(stmt);
-        return result;
-    }
-
-    // Добавление рабочей станции в БД (статус задаётся по умолчанию "available")
-    void addWorkstation(const Workstation& ws) {
-        stringstream ss;
-        ss << "INSERT INTO Workstations (id, name, status) VALUES ("
-           << ws.getId() << ", '" << ws.getName() << "', 'available');";
-        string sql = ss.str();
-        char* errMsg = nullptr;
-        int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &errMsg);
-        if (rc != SQLITE_OK) {
-            string err = errMsg;
-            sqlite3_free(errMsg);
-            throw runtime_error("Ошибка SQL: " + err);
+    for (int expiredId : expiredBookingIds) {
+        try {
+            manager.deleteBooking(expiredId);
+            bookingArray.erase(remove_if(bookingArray.begin(), bookingArray.end(),
+                                         [expiredId](const Booking& b){ return b.getBookingId() == expiredId; }),
+                               bookingArray.end());
+            cout << "Бронирование ID " << expiredId << " удалено (просрочено)." << endl;
+        } catch (const exception& e) {
+            cerr << "Ошибка при удалении просроченного бронирования ID " << expiredId << ": " << e.what() << endl;
         }
     }
 
-    // Удаление рабочей станции из БД по ID
-    void deleteWorkstation(int id) {
-        string sql = "DELETE FROM Workstations WHERE id = " + to_string(id) + ";";
-        char* errMsg = nullptr;
-        int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &errMsg);
-        if (rc != SQLITE_OK) {
-            string err = errMsg;
-            sqlite3_free(errMsg);
-            throw runtime_error("Ошибка SQL: " + err);
+    sort(affectedWorkstationIds.begin(), affectedWorkstationIds.end());
+    affectedWorkstationIds.erase(unique(affectedWorkstationIds.begin(), affectedWorkstationIds.end()), affectedWorkstationIds.end());
+
+    for (int wsId : affectedWorkstationIds) {
+        bool hasActiveOrFutureBookings = false;
+        auto checkTime = chrono::system_clock::now();
+        for (const auto& booking : bookingArray) {
+            if (booking.getWorkstationId() == wsId) {
+                auto bookingEndTime = booking.getEndDateTime();
+                if (bookingEndTime != chrono::system_clock::time_point::min() && bookingEndTime >= checkTime) {
+                    hasActiveOrFutureBookings = true;
+                    break;
+                }
+            }
+        }
+
+        if (!hasActiveOrFutureBookings) {
+            for (auto& ws : wsArray) {
+                if (ws.getId() == wsId && ws.getStatus() == "booked") {
+                    try {
+                        manager.updateWorkstationStatus(wsId, "available");
+                        ws.updateStatus("available");
+                        cout << "Статус станции ID " << wsId << " изменен на 'available' (нет активных броней)." << endl;
+                    } catch (const exception& e) {
+                         cerr << "Ошибка при обновлении статуса станции ID " << wsId << ": " << e.what() << endl;
+                    }
+                    break;
+                }
+            }
         }
     }
+     cout << "Проверка просроченных бронирований завершена." << endl;
+}
 
-    // Обновление статуса рабочей станции в БД по ID
-    void updateWorkstationStatus(int id, const string& newStatus) {
-        string sql = "UPDATE Workstations SET status = '" + newStatus + "' WHERE id = " + to_string(id) + ";";
-        char* errMsg = nullptr;
-        int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &errMsg);
-        if (rc != SQLITE_OK) {
-            string err = errMsg;
-            sqlite3_free(errMsg);
-            throw runtime_error("Ошибка SQL: " + err);
-        }
-    }
-
-    // Добавление бронирования в БД
-    void addBooking(const Booking& b) {
-        stringstream ss;
-        ss << "INSERT INTO Bookings (bookingId, workstationId, clientName, bookingDate, startHour, startMinute, endHour, endMinute) VALUES ("
-           << b.getBookingId() << ", " << b.getWorkstationId() << ", '" << b.getClientName() << "', '" << b.getBookingDate() << "', "
-           << b.getStartTime().hour << ", " << b.getStartTime().minute << ", "
-           << b.getEndTime().hour << ", " << b.getEndTime().minute << ");";
-        string sql = ss.str();
-        char* errMsg = nullptr;
-        int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &errMsg);
-        if (rc != SQLITE_OK) {
-            string err = errMsg;
-            sqlite3_free(errMsg);
-            throw runtime_error("Ошибка SQL: " + err);
-        }
-    }
-
-    // Удаление бронирования из БД по bookingId
-    void deleteBooking(int bookingId) {
-        string sql = "DELETE FROM Bookings WHERE bookingId = " + to_string(bookingId) + ";";
-        char* errMsg = nullptr;
-        int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &errMsg);
-        if (rc != SQLITE_OK) {
-            string err = errMsg;
-            sqlite3_free(errMsg);
-            throw runtime_error("Ошибка SQL: " + err);
-        }
-    }
-
-    // Обновление бронирования в БД по bookingId
-    void updateBooking(int bookingId, const Booking& b) {
-        stringstream ss;
-        ss << "UPDATE Bookings SET workstationId = " << b.getWorkstationId()
-           << ", clientName = '" << b.getClientName() << "', bookingDate = '" << b.getBookingDate() << "', startHour = " << b.getStartTime().hour
-           << ", startMinute = " << b.getStartTime().minute << ", endHour = " << b.getEndTime().hour
-           << ", endMinute = " << b.getEndTime().minute << " WHERE bookingId = " << bookingId << ";";
-        string sql = ss.str();
-        char* errMsg = nullptr;
-        int rc = sqlite3_exec(db, sql.c_str(), 0, 0, &errMsg);
-        if (rc != SQLITE_OK) {
-            string err = errMsg;
-            sqlite3_free(errMsg);
-            throw runtime_error("Ошибка SQL: " + err);
-        }
-    }
-};
-
-// Функция для управления рабочими станциями и бронированиями (синхронизация массива и БД)
 void manageData(BookingManager &manager) {
-    // Загружаем данные из БД в in-memory массивы
-    vector<Workstation> wsArray = manager.loadWorkstations();
-    vector<Booking> bookingArray = manager.loadBookings();
+    vector<Workstation> wsArray;
+    vector<Booking> bookingArray;
+
+    try {
+        wsArray = manager.loadWorkstations();
+        bookingArray = manager.loadBookings();
+        cout << "Данные успешно загружены из booking.db." << endl;
+    } catch (const exception& e) {
+        cerr << "Критическая ошибка при загрузке данных: " << e.what() << endl;
+        return;
+    }
+
+    checkAndRemoveExpiredBookings(manager, bookingArray, wsArray);
+
     int choice;
     while (true) {
         cout << "\n===== Главное меню =====\n";
@@ -288,17 +132,20 @@ void manageData(BookingManager &manager) {
         cout << "2. Управление бронированиями\n";
         cout << "0. Выход\n";
         cout << "Выберите действие: ";
-        cin >> choice;
-        if (cin.fail()) {
+
+        if (!(cin >> choice)) {
             cin.clear();
-            cin.ignore(256, '\n');
-            cout << "Неверный ввод. Повторите." << endl;
+            cin.ignore(numeric_limits<streamsize>::max(), '\n');
+            cout << "Неверный ввод. Пожалуйста, введите число." << endl;
             continue;
         }
+        cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
         if (choice == 0) {
             cout << "Выход из программы." << endl;
             break;
         }
+
         switch (choice) {
             case 1: {
                 int wsChoice;
@@ -310,85 +157,146 @@ void manageData(BookingManager &manager) {
                     cout << "4. Обновить статус рабочей станции\n";
                     cout << "0. Вернуться в главное меню\n";
                     cout << "Выберите действие: ";
-                    cin >> wsChoice;
-                    if (cin.fail()) {
+
+                    if (!(cin >> wsChoice)) {
                         cin.clear();
-                        cin.ignore(256, '\n');
-                        cout << "Неверный ввод. Повторите." << endl;
+                        cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                        cout << "Неверный ввод. Пожалуйста, введите число." << endl;
                         continue;
                     }
+                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
                     if (wsChoice == 0) break;
-                    switch (wsChoice) {
-                        case 1: {
-                            cout << "\n--- Список рабочих станций ---\n";
-                            for (const auto &ws : wsArray) {
-                                ws.display();
-                            }
-                            break;
-                        }
-                        case 2: {
-                            int id;
-                            string name;
-                            cout << "Введите ID станции: ";
-                            cin >> id;
-                            cout << "Введите название станции: ";
-                            cin.ignore();
-                            getline(cin, name);
-                            Workstation ws(id, name); // статус автоматически "available"
-                            manager.addWorkstation(ws);
-                            wsArray.push_back(ws);
-                            cout << "Рабочая станция добавлена." << endl;
-                            break;
-                        }
-                        case 3: {
-                            int id;
-                            cout << "Введите ID станции для удаления: ";
-                            cin >> id;
-                            bool found = false;
-                            for (auto it = wsArray.begin(); it != wsArray.end(); ++it) {
-                                if (it->getId() == id) {
-                                    wsArray.erase(it);
-                                    found = true;
-                                    break;
+
+                    try {
+                        switch (wsChoice) {
+                            case 1: {
+                                cout << "\n--- Список рабочих станций ---\n";
+                                if (wsArray.empty()) {
+                                    cout << "Рабочие станции не найдены." << endl;
+                                } else {
+                                    for (const auto &ws : wsArray) {
+                                        ws.display();
+                                    }
                                 }
+                                break;
                             }
-                            if (found) {
-                                manager.deleteWorkstation(id);
-                                cout << "Рабочая станция удалена." << endl;
-                            } else {
-                                cout << "Станция с таким ID не найдена." << endl;
-                            }
-                            break;
-                        }
-                        case 4: {
-                            int id;
-                            string newStatus;
-                            cout << "Введите ID станции для обновления: ";
-                            cin >> id;
-                            cout << "Введите новый статус: ";
-                            cin >> newStatus;
-                            bool found = false;
-                            for (auto &ws : wsArray) {
-                                if (ws.getId() == id) {
-                                    ws.updateStatus(newStatus);
-                                    found = true;
-                                    break;
+                            case 2: {
+                                int id;
+                                string name;
+                                cout << "Введите ID новой станции: ";
+                                if (!(cin >> id)) {
+                                    cin.clear();
+                                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                                    cout << "Неверный ID.\n";
+                                    continue;
                                 }
+                                cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+                                cout << "Введите название станции: ";
+                                getline(cin, name);
+                                if(name.empty()) {
+                                    cout << "Название не может быть пустым.\n";
+                                    continue;
+                                }
+
+                                bool id_exists = false;
+                                for(const auto& ws : wsArray) {
+                                    if(ws.getId() == id) {
+                                        id_exists = true;
+                                        break;
+                                    }
+                                }
+
+                                if(id_exists) {
+                                    cout << "Ошибка: Станция с ID " << id << " уже существует." << endl;
+                                    continue;
+                                }
+
+                                Workstation new_ws(id, name);
+                                manager.addWorkstation(new_ws);
+                                wsArray.push_back(new_ws);
+                                cout << "Рабочая станция добавлена." << endl;
+                                break;
                             }
-                            if (found) {
-                                manager.updateWorkstationStatus(id, newStatus);
-                                cout << "Статус обновлён." << endl;
-                            } else {
-                                cout << "Станция с таким ID не найдена." << endl;
+                            case 3: {
+                                int id_to_delete;
+                                cout << "Введите ID станции для удаления: ";
+                                if (!(cin >> id_to_delete)) {
+                                    cin.clear();
+                                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                                    cout << "Неверный ID.\n";
+                                    continue;
+                                }
+                                cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+                                size_t initial_size = wsArray.size();
+                                wsArray.erase(remove_if(wsArray.begin(), wsArray.end(),
+                                    [id_to_delete](const Workstation& ws){
+                                        return ws.getId() == id_to_delete;
+                                    }), wsArray.end());
+
+                                if (wsArray.size() < initial_size) {
+                                    manager.deleteWorkstation(id_to_delete);
+                                    cout << "Рабочая станция удалена." << endl;
+
+                                    bookingArray.erase(remove_if(bookingArray.begin(), bookingArray.end(),
+                                        [id_to_delete](const Booking& b){
+                                            return b.getWorkstationId() == id_to_delete;
+                                        }), bookingArray.end());
+                                    cout << "Связанные бронирования также удалены." << endl;
+                                } else {
+                                    cout << "Станция с таким ID не найдена." << endl;
+                                }
+                                break;
                             }
-                            break;
+                            case 4: {
+                                int id_to_update;
+                                string newStatus;
+                                cout << "Введите ID станции для обновления: ";
+                                if (!(cin >> id_to_update)) {
+                                    cin.clear();
+                                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                                    cout << "Неверный ID.\n";
+                                    continue;
+                                }
+                                cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+                                cout << "Введите новый статус (available/booked/maintenance): ";
+                                getline(cin, newStatus);
+
+                                if (newStatus != "available" && newStatus != "booked" && newStatus != "maintenance") {
+                                    cout << "Недопустимый статус. Используйте 'available', 'booked' или 'maintenance'." << endl;
+                                    continue;
+                                }
+
+                                bool found = false;
+                                for (auto &ws : wsArray) {
+                                    if (ws.getId() == id_to_update) {
+                                        manager.updateWorkstationStatus(id_to_update, newStatus);
+                                        ws.updateStatus(newStatus);
+                                        found = true;
+                                        break;
+                                    }
+                                }
+
+                                if (found) {
+                                    cout << "Статус обновлён." << endl;
+                                } else {
+                                    cout << "Станция с таким ID не найдена." << endl;
+                                }
+                                break;
+                            }
+                            default:
+                                cout << "Неверный выбор. Попробуйте снова." << endl;
                         }
-                        default:
-                            cout << "Неверный выбор. Попробуйте снова." << endl;
+                    } catch (const exception& e) {
+                        cerr << "Произошла ошибка при работе со станциями: " << e.what() << endl;
                     }
                 }
                 break;
             }
+
             case 2: {
                 int bookChoice;
                 while (true) {
@@ -399,133 +307,403 @@ void manageData(BookingManager &manager) {
                     cout << "4. Обновить бронирование\n";
                     cout << "0. Вернуться в главное меню\n";
                     cout << "Выберите действие: ";
-                    cin >> bookChoice;
-                    if (cin.fail()) {
+
+                    if (!(cin >> bookChoice)) {
                         cin.clear();
-                        cin.ignore(256, '\n');
-                        cout << "Неверный ввод. Повторите." << endl;
+                        cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                        cout << "Неверный ввод. Пожалуйста, введите число." << endl;
                         continue;
                     }
+                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
                     if (bookChoice == 0) break;
-                    switch (bookChoice) {
-                        case 1: {
-                            cout << "\n--- Список бронирований ---\n";
-                            for (const auto &b : bookingArray) {
-                                b.display();
-                            }
-                            break;
-                        }
-                        case 2: {
-                            int bookingId, workstationId;
-                            string clientName, bookingDate;
-                            Time start, end;
-                            cout << "Введите ID бронирования: ";
-                            cin >> bookingId;
-                            cout << "Введите ID рабочей станции: ";
-                            cin >> workstationId;
-                            cout << "Введите имя клиента: ";
-                            cin.ignore();
-                            getline(cin, clientName);
-                            cout << "Введите дату бронирования (YYYY-MM-DD): ";
-                            getline(cin, bookingDate);
-                            cout << "Введите время начала (час минута): ";
-                            cin >> start.hour >> start.minute;
-                            cout << "Введите время окончания (час минута): ";
-                            cin >> end.hour >> end.minute;
-                            Booking b(bookingId, workstationId, clientName, bookingDate, start, end);
-                            manager.addBooking(b);
-                            bookingArray.push_back(b);
-                            // При создании бронирования статус рабочей станции меняется на "booked"
-                            manager.updateWorkstationStatus(workstationId, "booked");
-                            // Обновляем статус в массиве рабочих станций
-                            for (auto &ws : wsArray) {
-                                if (ws.getId() == workstationId) {
-                                    ws.updateStatus("booked");
-                                    break;
+
+                    try {
+                        switch (bookChoice) {
+                            case 1: {
+                                cout << "\n--- Список бронирований ---\n";
+                                checkAndRemoveExpiredBookings(manager, bookingArray, wsArray);
+                                if (bookingArray.empty()) {
+                                    cout << "Актуальные бронирования не найдены." << endl;
+                                } else {
+                                    for (const auto &b : bookingArray) {
+                                        b.display();
+                                    }
                                 }
+                                break;
                             }
-                            cout << "Бронирование добавлено, статус станции изменён на 'booked'." << endl;
-                            break;
-                        }
-                        case 3: {
-                            int bookingId;
-                            cout << "Введите ID бронирования для удаления: ";
-                            cin >> bookingId;
-                            bool found = false;
-                            for (auto it = bookingArray.begin(); it != bookingArray.end(); ++it) {
-                                if (it->getBookingId() == bookingId) {
-                                    // При удалении бронирования можно, при необходимости, обновлять статус станции
-                                    bookingArray.erase(it);
-                                    found = true;
-                                    break;
+                            case 2: {
+                                int bookingId, workstationId;
+                                string clientName, bookingDateStr, startTimeStr, endTimeStr;
+                                Time start = {0, 0}, end = {0, 0};
+
+                                cout << "Введите ID нового бронирования: ";
+                                if (!(cin >> bookingId)) {
+                                    cin.clear();
+                                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                                    cout << "Неверный ID.\n";
+                                    continue;
                                 }
-                            }
-                            if (found) {
-                                manager.deleteBooking(bookingId);
-                                cout << "Бронирование удалено." << endl;
-                            } else {
-                                cout << "Бронирование с таким ID не найдено." << endl;
-                            }
-                            break;
-                        }
-                        case 4: {
-                            int bookingId, workstationId;
-                            string clientName, bookingDate;
-                            Time start, end;
-                            cout << "Введите ID бронирования для обновления: ";
-                            cin >> bookingId;
-                            cout << "Введите новый ID рабочей станции: ";
-                            cin >> workstationId;
-                            cout << "Введите новое имя клиента: ";
-                            cin.ignore();
-                            getline(cin, clientName);
-                            cout << "Введите новую дату бронирования (YYYY-MM-DD): ";
-                            getline(cin, bookingDate);
-                            cout << "Введите новое время начала (час минута): ";
-                            cin >> start.hour >> start.minute;
-                            cout << "Введите новое время окончания (час минута): ";
-                            cin >> end.hour >> end.minute;
-                            Booking b(bookingId, workstationId, clientName, bookingDate, start, end);
-                            bool found = false;
-                            for (auto &bk : bookingArray) {
-                                if (bk.getBookingId() == bookingId) {
-                                    bk = b;
-                                    found = true;
-                                    break;
+                                cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+                                bool book_id_exists = false;
+                                for(const auto& b : bookingArray) {
+                                    if(b.getBookingId() == bookingId) {
+                                        book_id_exists = true;
+                                        break;
+                                    }
                                 }
+
+                                if(book_id_exists) {
+                                    cout << "Ошибка: Бронирование с ID " << bookingId << " уже существует.\n";
+                                    continue;
+                                }
+
+                                cout << "Введите ID рабочей станции для бронирования: ";
+                                if (!(cin >> workstationId)) {
+                                    cin.clear();
+                                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                                    cout << "Неверный ID станции.\n";
+                                    continue;
+                                }
+                                cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+                                bool ws_exists = false;
+                                for(const auto& ws : wsArray) {
+                                    if(ws.getId() == workstationId) {
+                                        ws_exists = true;
+                                        break;
+                                    }
+                                }
+
+                                if(!ws_exists) {
+                                    cout << "Ошибка: Станция с ID " << workstationId << " не найдена.\n";
+                                    continue;
+                                }
+
+                                cout << "Введите имя клиента: ";
+                                getline(cin, clientName);
+                                if(clientName.empty()) {
+                                    cout << "Имя клиента не может быть пустым.\n";
+                                    continue;
+                                }
+
+                                cout << "Введите дату бронирования (формат DD-MM-YYYY): ";
+                                getline(cin, bookingDateStr);
+                                if (!isValidDateFormat(bookingDateStr)) {
+                                    cout << "Ошибка: Неверный формат даты. Используйте DD-MM-YYYY." << endl;
+                                    continue;
+                                }
+
+                                cout << "Введите время начала (формат HH:MM): ";
+                                getline(cin, startTimeStr);
+                                if (!parseTimeHHMM(startTimeStr, start)) {
+                                    cout << "Ошибка: Неверный формат времени начала. Используйте HH:MM." << endl;
+                                    continue;
+                                }
+
+                                cout << "Введите время окончания (формат HH:MM): ";
+                                getline(cin, endTimeStr);
+                                if (!parseTimeHHMM(endTimeStr, end)) {
+                                    cout << "Ошибка: Неверный формат времени окончания. Используйте HH:MM." << endl;
+                                    continue;
+                                }
+
+                                if (start.hour * 60 + start.minute >= end.hour * 60 + end.minute) {
+                                    cout << "Ошибка: Время начала должно быть раньше времени окончания.\n";
+                                    continue;
+                                }
+
+                                Booking new_b(bookingId, workstationId, clientName, bookingDateStr, start, end);
+                                auto endTimePoint = new_b.getEndDateTime();
+
+                                if (endTimePoint != chrono::system_clock::time_point::min() &&
+                                    endTimePoint < chrono::system_clock::now()) {
+                                    cout << "Ошибка: Нельзя добавить бронирование на уже прошедшее время." << endl;
+                                    continue;
+                                }
+
+                                bool conflictDetected = false;
+                                int new_start_minutes = new_b.getStartTime().hour * 60 + new_b.getStartTime().minute;
+                                int new_end_minutes = new_b.getEndTime().hour * 60 + new_b.getEndTime().minute;
+
+                                for (const auto& existing_booking : bookingArray) {
+                                    if (existing_booking.getWorkstationId() == new_b.getWorkstationId() &&
+                                        existing_booking.getBookingDate() == new_b.getBookingDate()) {
+                                        int existing_start_minutes = existing_booking.getStartTime().hour * 60 +
+                                                                   existing_booking.getStartTime().minute;
+                                        int existing_end_minutes = existing_booking.getEndTime().hour * 60 +
+                                                                 existing_booking.getEndTime().minute;
+
+                                        if (new_start_minutes < existing_end_minutes &&
+                                            existing_start_minutes < new_end_minutes) {
+                                            conflictDetected = true;
+                                            cerr << "Ошибка: Конфликт времени! Станция " << new_b.getWorkstationId()
+                                                 << " уже забронирована в это время (ID существующей брони: "
+                                                 << existing_booking.getBookingId() << ")." << endl;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (conflictDetected) {
+                                    continue;
+                                }
+
+                                manager.addBooking(new_b);
+                                bookingArray.push_back(new_b);
+
+                                bool status_updated = false;
+                                for (auto &ws : wsArray) {
+                                    if (ws.getId() == workstationId) {
+                                        if (ws.getStatus() != "booked") {
+                                            manager.updateWorkstationStatus(workstationId, "booked");
+                                            ws.updateStatus("booked");
+                                            status_updated = true;
+                                        }
+                                        break;
+                                    }
+                                }
+
+                                cout << "Бронирование добавлено."
+                                     << (status_updated ? " Статус станции обновлен на 'booked'." : "") << endl;
+                                break;
                             }
-                            if (found) {
-                                manager.updateBooking(bookingId, b);
+                            case 3: {
+                                int bookingId_to_delete;
+                                cout << "Введите ID бронирования для удаления: ";
+                                if (!(cin >> bookingId_to_delete)) {
+                                    cin.clear();
+                                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                                    cout << "Неверный ID.\n";
+                                    continue;
+                                }
+                                cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+                                int wsId_of_deleted_booking = -1;
+                                size_t initial_size = bookingArray.size();
+
+                                bookingArray.erase(
+                                    remove_if(bookingArray.begin(), bookingArray.end(),
+                                        [&](const Booking& b){
+                                            if (b.getBookingId() == bookingId_to_delete) {
+                                                wsId_of_deleted_booking = b.getWorkstationId();
+                                                return true;
+                                            }
+                                            return false;
+                                        }
+                                    ),
+                                    bookingArray.end()
+                                );
+
+                                if (bookingArray.size() < initial_size) {
+                                    manager.deleteBooking(bookingId_to_delete);
+                                    cout << "Бронирование удалено." << endl;
+
+                                    bool other_active_bookings_exist = false;
+                                    if (wsId_of_deleted_booking != -1) {
+                                        auto checkTime = chrono::system_clock::now();
+                                        for(const auto& b : bookingArray) {
+                                            if (b.getWorkstationId() == wsId_of_deleted_booking) {
+                                                auto bookingEndTime = b.getEndDateTime();
+                                                if(bookingEndTime != chrono::system_clock::time_point::min() &&
+                                                   bookingEndTime >= checkTime) {
+                                                    other_active_bookings_exist = true;
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        if (!other_active_bookings_exist) {
+                                            for(auto& ws : wsArray) {
+                                                if(ws.getId() == wsId_of_deleted_booking &&
+                                                   ws.getStatus() == "booked") {
+                                                    manager.updateWorkstationStatus(wsId_of_deleted_booking, "available");
+                                                    ws.updateStatus("available");
+                                                    cout << "Статус станции " << wsId_of_deleted_booking
+                                                         << " изменен на 'available', так как других активных броней нет."
+                                                         << endl;
+                                                    break;
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    cout << "Бронирование с таким ID не найдено." << endl;
+                                }
+                                break;
+                            }
+                            case 4: {
+                                int bookingId_to_update;
+                                cout << "Введите ID бронирования для обновления: ";
+                                if (!(cin >> bookingId_to_update)) {
+                                    cin.clear();
+                                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                                    cout << "Неверный ID.\n";
+                                    continue;
+                                }
+                                cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+                                Booking* booking_ptr = nullptr;
+                                for(auto& b : bookingArray) {
+                                    if(b.getBookingId() == bookingId_to_update) {
+                                        booking_ptr = &b;
+                                        break;
+                                    }
+                                }
+
+                                if (!booking_ptr) {
+                                    cout << "Бронирование с ID " << bookingId_to_update << " не найдено." << endl;
+                                    continue;
+                                }
+
+                                int new_workstationId;
+                                string new_clientName, new_bookingDateStr, new_startTimeStr, new_endTimeStr;
+                                Time new_start, new_end;
+
+                                cout << "Введите новый ID рабочей станции (текущий: "
+                                     << booking_ptr->getWorkstationId() << "): ";
+                                if (!(cin >> new_workstationId)) {
+                                    cin.clear();
+                                    cin.ignore(numeric_limits<streamsize>::max(), '\n');
+                                    cout << "Неверный ID станции.\n";
+                                    continue;
+                                }
+                                cin.ignore(numeric_limits<streamsize>::max(), '\n');
+
+                                bool new_ws_exists = false;
+                                for(const auto& ws : wsArray) {
+                                    if(ws.getId() == new_workstationId) {
+                                        new_ws_exists = true;
+                                        break;
+                                    }
+                                }
+
+                                if(!new_ws_exists) {
+                                    cout << "Ошибка: Станция с ID " << new_workstationId << " не найдена.\n";
+                                    continue;
+                                }
+
+                                cout << "Введите новое имя клиента (текущее: " << booking_ptr->getClientName()
+                                     << ", Enter чтобы оставить): ";
+                                getline(cin, new_clientName);
+                                if(new_clientName.empty()) {
+                                    new_clientName = booking_ptr->getClientName();
+                                }
+
+                                cout << "Введите новую дату (DD-MM-YYYY) (текущая: " << booking_ptr->getBookingDate()
+                                     << ", Enter чтобы оставить): ";
+                                getline(cin, new_bookingDateStr);
+                                if(new_bookingDateStr.empty()) {
+                                    new_bookingDateStr = booking_ptr->getBookingDate();
+                                } else if (!isValidDateFormat(new_bookingDateStr)) {
+                                    cout << "Ошибка: Неверный формат даты. Используйте DD-MM-YYYY." << endl;
+                                    continue;
+                                }
+
+                                cout << "Введите новое время начала (HH:MM) (текущее: " << setfill('0') << setw(2)
+                                     << booking_ptr->getStartTime().hour << ":" << setw(2)
+                                     << booking_ptr->getStartTime().minute << ", Enter чтобы оставить): ";
+                                getline(cin, new_startTimeStr);
+                                if(new_startTimeStr.empty()) {
+                                    new_start = booking_ptr->getStartTime();
+                                } else if (!parseTimeHHMM(new_startTimeStr, new_start)) {
+                                    cout << "Ошибка: Неверный формат времени начала. Используйте HH:MM." << endl;
+                                    continue;
+                                }
+
+                                cout << "Введите новое время окончания (HH:MM) (текущее: " << setfill('0') << setw(2)
+                                     << booking_ptr->getEndTime().hour << ":" << setw(2)
+                                     << booking_ptr->getEndTime().minute << ", Enter чтобы оставить): ";
+                                getline(cin, new_endTimeStr);
+                                if(new_endTimeStr.empty()) {
+                                    new_end = booking_ptr->getEndTime();
+                                } else if (!parseTimeHHMM(new_endTimeStr, new_end)) {
+                                    cout << "Ошибка: Неверный формат времени окончания. Используйте HH:MM." << endl;
+                                    continue;
+                                }
+
+                                if (new_start.hour * 60 + new_start.minute >= new_end.hour * 60 + new_end.minute) {
+                                    cout << "Ошибка: Время начала должно быть раньше времени окончания.\n";
+                                    continue;
+                                }
+
+                                Booking updated_b(bookingId_to_update, new_workstationId, new_clientName,
+                                                new_bookingDateStr, new_start, new_end);
+                                auto endTimePoint = updated_b.getEndDateTime();
+
+                                if (endTimePoint != chrono::system_clock::time_point::min() &&
+                                    endTimePoint < chrono::system_clock::now()) {
+                                    cout << "Ошибка: Нельзя обновить бронирование на уже прошедшее время." << endl;
+                                    continue;
+                                }
+
+                                bool conflictDetected = false;
+                                int new_start_minutes = updated_b.getStartTime().hour * 60 +
+                                                      updated_b.getStartTime().minute;
+                                int new_end_minutes = updated_b.getEndTime().hour * 60 +
+                                                    updated_b.getEndTime().minute;
+
+                                for (const auto& existing_booking : bookingArray) {
+                                    if (existing_booking.getBookingId() == updated_b.getBookingId()) {
+                                        continue;
+                                    }
+
+                                    if (existing_booking.getWorkstationId() == updated_b.getWorkstationId() &&
+                                        existing_booking.getBookingDate() == updated_b.getBookingDate()) {
+                                        int existing_start_minutes = existing_booking.getStartTime().hour * 60 +
+                                                                   existing_booking.getStartTime().minute;
+                                        int existing_end_minutes = existing_booking.getEndTime().hour * 60 +
+                                                                 existing_booking.getEndTime().minute;
+
+                                        if (new_start_minutes < existing_end_minutes &&
+                                            existing_start_minutes < new_end_minutes) {
+                                            conflictDetected = true;
+                                            cerr << "Ошибка: Конфликт времени при обновлении! Станция "
+                                                 << updated_b.getWorkstationId()
+                                                 << " уже забронирована в это время (ID существующей брони: "
+                                                 << existing_booking.getBookingId() << ")." << endl;
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                if (conflictDetected) {
+                                    continue;
+                                }
+
+                                manager.updateBooking(bookingId_to_update, updated_b);
+                                *booking_ptr = updated_b;
                                 cout << "Бронирование обновлено." << endl;
-                            } else {
-                                cout << "Бронирование с таким ID не найдено." << endl;
+                                break;
                             }
-                            break;
+                            default:
+                                cout << "Неверный выбор. Попробуйте снова." << endl;
                         }
-                        default:
-                            cout << "Неверный выбор. Попробуйте снова." << endl;
+                    } catch (const exception& e) {
+                        cerr << "Произошла ошибка при работе с бронированиями: " << e.what() << endl;
                     }
                 }
                 break;
             }
             default:
-                cout << "Неверный выбор. Попробуйте снова." << endl;
+                cout << "Неверный выбор. Пожалуйста, попробуйте снова." << endl;
         }
     }
 }
 
 int main() {
-#ifdef _WIN32
-    // Установка кодовой страницы консоли на UTF-8 для корректного отображения русских символов
-    SetConsoleCP(CP_UTF8);
     SetConsoleOutputCP(CP_UTF8);
-#endif
+    cout.sync_with_stdio(false);
+    cin.tie(nullptr);
 
+    unique_ptr<BookingManager> manager_ptr;
     try {
-        manageData(*(new BookingManager()));
-    } catch (exception &ex) {
-        cerr << "Ошибка: " << ex.what() << endl;
+        manager_ptr = make_unique<BookingManager>();
+        manageData(*manager_ptr);
+    } catch (const exception &ex) {
+        cerr << "Критическая ошибка программы: " << ex.what() << endl;
+        return 1;
     }
-
     return 0;
 }
