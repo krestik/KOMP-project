@@ -6,4 +6,4 @@ struct Time {
     int minute;
 };
 
-#endif 
+#endif // TIME_H
