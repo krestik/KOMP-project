@@ -1,0 +1,3 @@
+C:/Users/vasil/Downloads/kpkapp/build/CMakeFiles/kpkapp.dir
+C:/Users/vasil/Downloads/kpkapp/build/CMakeFiles/ALL_BUILD.dir
+C:/Users/vasil/Downloads/kpkapp/build/CMakeFiles/ZERO_CHECK.dir

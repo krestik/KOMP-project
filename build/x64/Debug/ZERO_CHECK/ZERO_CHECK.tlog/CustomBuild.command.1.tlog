@@ -1,0 +1,10 @@
+^C:\USERS\VASIL\DOWNLOADS\KPKAPP\BUILD\CMAKEFILES\1A27B0B8C0C6AA8603985C233628A089\GENERATE.STAMP.RULE
+setlocal
+"C:\Program Files\CMake\bin\cmake.exe" -SC:/Users/vasil/Downloads/kpkapp -BC:/Users/vasil/Downloads/kpkapp/build --check-stamp-list CMakeFiles/generate.stamp.list --vs-solution-file C:/Users/vasil/Downloads/kpkapp/build/kpkapp.sln
+if %errorlevel% neq 0 goto :cmEnd
+:cmEnd
+endlocal & call :cmErrorLevel %errorlevel% & goto :cmDone
+:cmErrorLevel
+exit /b %1
+:cmDone
+if %errorlevel% neq 0 goto :VCEnd
